@@ -1,0 +1,177 @@
+import cv2
+import time
+import numpy as np
+import keyboard
+
+field = np.ones((1000,1500,3),np.uint8)*235
+presentation = True
+bullets = []
+
+def normalise_position(pos):
+    return [(pos[0]/field.shape[1])*2-1,(pos[1]/field.shape[0])*2-1,pos[2]/180-1]
+class Drone:
+    def __init__(self,position,colour,index,mind=0):
+        self.pos = position[:2]#x,y
+        self.angle = position[2]#angle
+        self.light = False
+        self.colour = colour
+        self.size = 15
+        self.mind = mind
+        self.memory = []
+        self.detect_radius = 50
+        self.epsilion = 1
+        self.discount = 0.99
+        self.index = index
+        self.exists = True
+        
+        self.energy = 100
+        self.energy_discount = 0.05
+        self.ammo = 10
+        
+        self.move_step = 1
+        self.rotation_step = 5
+
+    def move(self,actions):
+        if self.energy <= 0:
+            #print('Energia chka')
+            self.exists = False
+        if actions[2] == 1:
+            self.angle += self.rotation_step
+            self.energy -= self.energy_discount/10
+        elif actions[2] == 2:
+            self.angle -= self.rotation_step
+            self.energy -= self.energy_discount/10
+        
+        angle = self.angle*(np.pi/180.)
+        if actions[0] == 1:
+            self.pos[0] += self.move_step * np.cos(angle)
+            self.pos[1] -= self.move_step * np.sin(angle)
+            self.energy -= self.energy_discount
+        if actions[0] == 2:
+            self.pos[0] -= self.move_step * np.cos(angle)
+            self.pos[1] += self.move_step * np.sin(angle)
+            self.energy -= self.energy_discount
+            
+        if actions[1] == 1:
+            self.pos[0] += self.move_step * np.cos(angle-90*np.pi/180.)
+            self.pos[1] -= self.move_step * np.sin(angle-90*np.pi/180.)
+            self.energy -= self.energy_discount
+        if actions[1] == 2:
+            self.pos[0] += self.move_step * np.cos(angle+90*np.pi/180.)
+            self.pos[1] -= self.move_step * np.sin(angle+90*np.pi/180.)
+            self.energy -= self.energy_discount
+            
+        if actions[4] == 1:
+            self.fire()    
+        self.light = actions[3]
+    
+    def fire(self):
+        if self.ammo > 0:
+            bullets.append([self.pos[0],self.pos[1],self.angle])
+        
+    def update(self):
+        #state = normalise_position(self.pos) + [1 if self.light else -1,]
+        #decision = mind.predict(state)
+        #        0                   1                      2                         3               4          
+        # 0     1       2     | 3    4    5   | 6      7            8         |   9         10    | 11   12
+        #nop forward backward |nop left right |nop clockwise counterclockwise |light off  light on| nop fire
+        if self.colour == 'blue':
+            key = cv2.waitKey(10)
+            if key == 119:
+                actions = [1,0,0,0,0]
+            elif key == 97:
+                actions = [0,2,0,0,0]
+            elif key == 100:
+                actions = [0,1,0,0,0]
+            elif key == 115:
+                actions = [2,0,0,0,0]
+            elif key == 113:
+                actions = [0,0,1,0,0]
+            elif key == 101:
+                actions = [0,0,2,0,0]
+            elif key == 32:
+                actions = [0,0,0,0,1]
+            else: return
+        else:
+            if np.random.random() <= self.epsilion:
+                actions = [np.random.randint(3),np.random.randint(3),np.random.randint(3),np.random.randint(2),np.random.randint(2)]
+            actions[0] = 1
+            actions[4] = 0
+        #else:
+        #    actions = [np.argmax(decision[:3]),np.argmax(decision[3:6]),np.argmax(decision[6:9]),np.argmax(decision[9:11]),np.argmax(decision[11:])]
+        # 
+        #self.memory.append([state,decision,actions,0])
+        self.move(actions)
+        if self.pos[0] < 0 or self.pos[0] > field.shape[1] or self.pos[1] < 0 or self.pos[1] > field.shape[0]:
+            #print('Chaperic durs eka')
+            self.exists = False
+        for drone in drones:
+            if drone.exists and self.index != drone.index and (self.pos[0] - drone.pos[0])**2 + (self.pos[1] - drone.pos[1])**2 < (self.size+drone.size)**2:
+                #print('Kpa urishin')
+                self.exists = False
+                drone.exists = False
+   
+    def show(self,field):
+        colour = (255,0,0) if self.colour == 'blue' else (0,0,255)
+        pos = (int(self.pos[0]),int(self.pos[1]))
+        cv2.circle(field,pos,self.size,colour,2)
+        cv2.line(field,pos,(pos[0] + int(self.size*np.cos(self.angle*np.pi/180) ),pos[1] + int(-self.size*np.sin(self.angle*np.pi/180))),colour,1)
+        cv2.circle(field,(pos[0]+int(self.size*np.cos((self.angle+90)*np.pi/180)/2),pos[1]+int(-self.size*np.sin((self.angle+90)*np.pi/180)/2)),int(self.size/2),(0,255,100),self.light-1)
+    
+    def check_bullet_collision(self):
+        for bullet in bullets:
+            if self.pos[0] == bullet[0] and self.pos[1] == bullet[1]:
+                continue
+            print(self.pos,bullet)
+            delta_y = np.abs(self.pos[0] * np.tan(bullet[2]*np.pi/180) + bullet[1] - (field.shape[0]-self.pos[1]))
+            
+            delta_x = np.abs(((field.shape[0]-self.pos[1])-bullet[1])/np.tan(bullet[2]*np.pi/180) - self.pos[0])
+            
+            if np.isinf(delta_x):
+                h = delta_y
+            elif np.isinf(delta_y):
+                h = delta_x
+            else:
+                h = delta_x*delta_y/np.sqrt(delta_x**2 + delta_y**2)
+            print('Dx {} Dy {} H {}'.format(delta_x,delta_y,h))
+            if h < self.size:
+                self.exists = False
+            
+            
+for i in range(1):
+    drones = [Drone([500,i*100+500,0],'blue',i) for i in range(0,1)]
+    drones.extend( [Drone([1000,i*100,180],'red',i+10) for i in range(0,10)] )
+    print('Number of drones ',len(drones))
+    
+    while True:
+        img = field.copy()
+        for drone in drones:
+            if not drone.exists:
+                continue
+            drone.update()
+            if presentation:
+                drone.show(img)
+        if len(bullets) > 0:
+            [drone.check_bullet_collision() for drone in drones if drone.exists]
+            
+        nred,nblue = [drone.colour for drone in drones if drone.exists].count('red'),[drone.colour for drone in drones if drone.exists].count('blue')
+        if nred == 0 and nblue > 0:
+            print('Blue wins')
+            break
+        elif nred>0 and nblue == 0:
+            print('Red wins')
+            break
+        elif nred == nblue == 0:
+            print('Nichya')
+            break
+
+        if presentation:
+            for bullet in bullets:
+                cv2.line(img,(int(bullet[0]),int(bullet[1])),(int(bullet[0])+int(2000*np.cos(bullet[2]*np.pi/180)),int(bullet[1])-int(2000*np.sin(bullet[2]*np.pi/180))),(0,0,0),3)
+            bullets = []
+            cv2.imshow('Battlefield',img)
+            if cv2.waitKey(10) == 27:
+                break
+    
+
+cv2.destroyAllWindows()
